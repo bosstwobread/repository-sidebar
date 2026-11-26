@@ -1,30 +1,41 @@
 # Repository Sidebar
 
-Repository Sidebar is a native macOS companion for GitHub Desktop. It keeps your local repositories in a permanent left pane alongside Changes, History, and a unified diff.
+Repository Sidebar is a native macOS app for reviewing local Git changes. It keeps your repositories visible in a permanent sidebar while you browse changed files, commit history, and diffs.
 
-## Use the app
+![Repository Sidebar showing three example repositories, a selected changed file, and its numbered red and green diff.](docs/repository-sidebar-demo.png)
 
-1. Open **Repository Sidebar.app** on macOS 14 or later.
-2. Repositories registered in GitHub Desktop appear automatically. Click a repository to browse **Changes** and **History**.
-3. For an additional repository, click **+** or press **⌘O**. Select repository folders or a folder that directly contains them.
+## What you can do
 
-The newest local changes appear first. For each repository, the app compares the newest local commit at a branch tip or detached HEAD with the newest modified or untracked file Git reports. For deletions and renames it also considers the containing directories. The list refreshes when the app opens or becomes active, and when you press **⌘R**.
+- Open repositories already registered in GitHub Desktop, or add local Git folders with **+**.
+- Find recent work first. The sidebar ranks repositories by local commit timestamps and uncommitted file changes.
+- Review local changes and the current branch’s 40 most recent commits with a unified diff and old and new line numbers.
+- Use **Open in GitHub Desktop** when you want to commit, switch branches, or sync.
 
-Right-click a sidebar item for **Show in Finder** or **Remove from List**. The app remembers its own list and last selection locally. **Open in GitHub Desktop** hands the selected repository to GitHub Desktop.
+## Build and run
 
-The app reads GitHub Desktop 3.7’s local database and reads working trees through the system Git executable. History shows the 40 most recent commits on the current branch. Each diff section is capped at 256 KiB.
-
-macOS may ask for permission to read repository folders in protected locations such as Documents or Desktop.
-
-## Build from source
-
-Use a Mac with the Xcode command-line tools and a macOS SDK. Run the following from this source directory.
+The app runs on macOS 14 or later. To build it, use Xcode 16 or later with its command-line tools selected.
 
 ```sh
+git clone https://github.com/bosstwobread/repository-sidebar.git
+cd repository-sidebar
 ./build.sh
 open 'build/Repository Sidebar.app'
 ```
 
-The build produces an ad hoc signed app with Apple Silicon and Intel slices.
+The build produces an ad hoc signed app for Apple Silicon and Intel Macs.
 
-The layout draws on [GitHub Desktop’s Changes and History views](https://docs.github.com/en/desktop/overview/creating-your-first-repository-using-github-desktop#part-3-exploring-github-desktop).
+## Keyboard shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| **← / →** | Move focus between the repository sidebar and the active Changes or History list |
+| **↑ / ↓** | Move selection in the focused list |
+| **⌘1 / ⌘2** | Open Changes or History |
+| **⌘O** | Add local repositories |
+| **⌘R** | Refresh the repository list and local changes |
+
+The focused selection is blue. Each pane keeps its selected item when you move focus or click an empty area.
+
+## Local data
+
+Repository Sidebar reads GitHub Desktop 3.7’s local repository registry and uses system Git to inspect your working copies. You can add folders manually if GitHub Desktop is unavailable. macOS may ask for permission to read repositories in protected folders such as Documents or Desktop.

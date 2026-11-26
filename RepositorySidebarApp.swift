@@ -14,9 +14,100 @@ struct RepositorySidebarApp: App {
     }
 }
 
+private enum ReviewPane: Hashable {
+    case repositories, changes, history
+}
+
+private struct ReviewRowColors {
+    let selected: Bool
+    let focused: Bool
+
+    var isActive: Bool { selected && focused }
+    var primary: Color { isActive ? .white : selected ? DesktopPalette.selectionText : .primary }
+    var secondary: Color { selected ? primary : .secondary }
+}
+
+private struct ReviewList<Item: Identifiable, Row: View>: View where Item.ID == String {
+    let items: [Item]
+    @Binding var selection: String?
+    let pane: ReviewPane
+    @Binding var requestedFocus: ReviewPane?
+    var rightPane: ReviewPane? = nil
+    @ViewBuilder let row: (Item, ReviewRowColors) -> Row
+    @Environment(\.appearsActive) private var appearsActive
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        ScrollViewReader { scroll in
+            List {
+                ForEach(items) { item in
+                    let colors = ReviewRowColors(selected: selection == item.id,
+                                                 focused: appearsActive && focused)
+                    Button {
+                        requestedFocus = nil
+                        focused = true
+                        selection = item.id
+                    } label: {
+                        row(item, colors)
+                            .foregroundStyle(colors.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    .listRowInsets(pane == .history ? nil : EdgeInsets(top: 0, leading: pane == .repositories ? 10 : 8,
+                                                                      bottom: 0, trailing: 10))
+                    .listRowSeparator(pane == .repositories ? .hidden : .automatic)
+                    .listRowBackground(colors.isActive ? DesktopPalette.selectionBlue
+                                       : colors.selected ? DesktopPalette.selectionGray : .clear)
+                    .accessibilityAddTraits(colors.selected ? .isSelected : [])
+                }
+            }
+            .focusable()
+            .focused($focused)
+            .focusEffectDisabled()
+            .simultaneousGesture(TapGesture().onEnded {
+                requestedFocus = nil
+                focused = true
+            })
+            .onChange(of: requestedFocus, initial: true) { _, target in
+                guard target == pane else { return }
+                focused = true
+                requestedFocus = nil
+            }
+            .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow]) { press in
+                guard press.modifiers.intersection([.command, .control, .option, .shift]).isEmpty else { return .ignored }
+                switch press.key {
+                case .leftArrow where pane != .repositories:
+                    requestedFocus = .repositories
+                case .rightArrow where pane == .repositories:
+                    guard let rightPane else { return .ignored }
+                    requestedFocus = rightPane
+                case .upArrow, .downArrow:
+                    guard !items.isEmpty else { return .ignored }
+                    let direction = press.key == .downArrow ? 1 : -1
+                    let current = items.firstIndex { $0.id == selection }
+                    let index = current.map { min(max($0 + direction, 0), items.count - 1) }
+                        ?? (direction == 1 ? 0 : items.count - 1)
+                    let id = items[index].id
+                    if id != selection {
+                        selection = id
+                        scroll.scrollTo(id)
+                    }
+                default:
+                    return .ignored
+                }
+                return .handled
+            }
+        }
+    }
+}
+
 private enum RepositoryTab: String, Hashable {
     case changes = "Changes"
     case history = "History"
+
+    var pane: ReviewPane { self == .changes ? .changes : .history }
 }
 
 private struct RepositoryWindow: View {
@@ -28,6 +119,7 @@ private struct RepositoryWindow: View {
     @State private var choosingFolders = false
     @State private var addError: String?
     @State private var repositoryFilter = ""
+    @State private var requestedFocus: ReviewPane? = .repositories
 
     private var repository: LocalRepository? {
         catalog.repositories.first { $0.id == selectedRepository }
@@ -41,7 +133,8 @@ private struct RepositoryWindow: View {
 
             Group {
                 if let repository {
-                    RepositoryInspector(repository: repository, tab: $tab, refreshID: refreshID, refresh: refresh)
+                    RepositoryInspector(repository: repository, tab: $tab, requestedFocus: $requestedFocus,
+                                        refreshID: refreshID, refresh: refresh)
                         .id(repository.id)
                 } else {
                     emptyState
@@ -144,22 +237,19 @@ private struct RepositoryWindow: View {
                 .padding(8)
             Rectangle().fill(DesktopPalette.border).frame(height: 1)
 
-            List(selection: $selectedRepository) {
-                ForEach(catalog.repositories.filter {
-                    repositoryFilter.isEmpty || $0.name.localizedCaseInsensitiveContains(repositoryFilter)
-                }) { repository in
-                    repositoryRow(repository)
-                        .tag(repository.id)
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10))
-                        .help(repositoryHelp(repository))
-                        .contextMenu {
-                            Button("Show in Finder") {
-                                NSWorkspace.shared.activateFileViewerSelecting([repository.url])
-                            }
-                            Button("Remove from List") { remove(repository) }
+            let visibleRepositories = catalog.repositories.filter {
+                repositoryFilter.isEmpty || $0.name.localizedCaseInsensitiveContains(repositoryFilter)
+            }
+            ReviewList(items: visibleRepositories, selection: $selectedRepository, pane: .repositories,
+                       requestedFocus: $requestedFocus, rightPane: repository == nil ? nil : tab.pane) { repository, colors in
+                repositoryRow(repository, colors: colors)
+                    .help(repositoryHelp(repository))
+                    .contextMenu {
+                        Button("Show in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([repository.url])
                         }
-                }
+                        Button("Remove from List") { remove(repository) }
+                    }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
@@ -188,26 +278,25 @@ private struct RepositoryWindow: View {
         .background(DesktopPalette.canvas)
     }
 
-    private func repositoryRow(_ repository: LocalRepository) -> some View {
-        let selected = repository.id == selectedRepository
-        return HStack(spacing: 9) {
+    private func repositoryRow(_ repository: LocalRepository, colors: ReviewRowColors) -> some View {
+        HStack(spacing: 9) {
             Image(systemName: "folder")
                 .font(.system(size: 14))
-                .foregroundStyle(selected ? Color.primary : Color.secondary)
+                .foregroundStyle(colors.secondary)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(repository.name)
-                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                    .font(.system(size: 13, weight: colors.selected ? .semibold : .regular))
                 Text(repository.parentPath)
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(colors.secondary)
                     .truncationMode(.middle)
             }
             .lineLimit(1)
             Spacer(minLength: 0)
             if repository.hasChanges {
                 Circle()
-                    .fill(DesktopPalette.blue)
+                    .fill(colors.isActive ? .white : DesktopPalette.selectionBlue)
                     .frame(width: 7, height: 7)
                     .accessibilityLabel("Uncommitted changes")
             }
@@ -248,6 +337,7 @@ private struct PreviewResult {
 private struct RepositoryInspector: View {
     let repository: LocalRepository
     @Binding var tab: RepositoryTab
+    @Binding var requestedFocus: ReviewPane?
     let refreshID: UUID
     let refresh: () -> Void
     @State private var snapshot: GitSnapshot?
@@ -395,34 +485,28 @@ private struct RepositoryInspector: View {
                     .background(DesktopPalette.panel)
                 Rectangle().fill(DesktopPalette.border).frame(height: 1)
 
-                List(selection: $selectedChange) {
-                    ForEach(snapshot.changes.filter {
-                        changeFilter.isEmpty || $0.path.localizedCaseInsensitiveContains(changeFilter)
-                    }) { change in
-                        changeRow(change)
-                            .tag(change.id)
-                            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 10))
-                    }
+                let visibleChanges = snapshot.changes.filter {
+                    changeFilter.isEmpty || $0.path.localizedCaseInsensitiveContains(changeFilter)
+                }
+                ReviewList(items: visibleChanges, selection: $selectedChange, pane: .changes, requestedFocus: $requestedFocus) { change, colors in
+                    changeRow(change, colors: colors)
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .tint(DesktopPalette.blue)
                 .accessibilityLabel("Changed files")
             } else {
-                List(selection: $selectedCommit) {
-                    ForEach(snapshot.commits) { commit in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(commit.subject.isEmpty ? "Untitled commit" : commit.subject)
-                                .font(.system(size: 13, weight: .medium))
-                                .lineLimit(2)
-                            Text("\(commit.shortID) · \(commit.relativeDate)")
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        .padding(.vertical, 5)
-                        .tag(commit.id)
+                ReviewList(items: snapshot.commits, selection: $selectedCommit, pane: .history, requestedFocus: $requestedFocus) { commit, colors in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(commit.subject.isEmpty ? "Untitled commit" : commit.subject)
+                            .font(.system(size: 13, weight: .medium))
+                            .lineLimit(2)
+                        Text("\(commit.shortID) · \(commit.relativeDate)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(colors.secondary)
+                            .lineLimit(1)
                     }
+                    .padding(.vertical, 5)
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
@@ -435,6 +519,7 @@ private struct RepositoryInspector: View {
     private func tabButton(_ target: RepositoryTab, count: Int? = nil) -> some View {
         Button {
             tab = target
+            requestedFocus = target.pane
         } label: {
             HStack(spacing: 5) {
                 Text(target.rawValue)
@@ -459,7 +544,7 @@ private struct RepositoryInspector: View {
         .accessibilityAddTraits(tab == target ? .isSelected : [])
     }
 
-    private func changeRow(_ change: GitChange) -> some View {
+    private func changeRow(_ change: GitChange, colors: ReviewRowColors) -> some View {
         let name = (change.path as NSString).lastPathComponent
         let directory = (change.path as NSString).deletingLastPathComponent
         let status = change.workTreeStatus == " " ? change.indexStatus : change.workTreeStatus
@@ -468,7 +553,7 @@ private struct RepositoryInspector: View {
             HStack(spacing: 0) {
                 if !directory.isEmpty {
                     Text(directory + "/")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(colors.secondary)
                         .truncationMode(.middle)
                 }
                 Text(name)
@@ -479,7 +564,7 @@ private struct RepositoryInspector: View {
             Spacer(minLength: 4)
             Image(systemName: statusIcon(status))
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(statusColor(status))
+                .foregroundStyle(colors.isActive ? .white : statusColor(status))
                 .frame(width: 14, height: 16)
                 .accessibilityLabel(statusDescription(status))
         }
@@ -681,6 +766,9 @@ private enum DesktopPalette {
     static let panel = Color(nsColor: panelColor)
     static let border = Color(nsColor: borderColor)
     static let blue = Color(nsColor: adaptive(0x0969DA, 0x58A6FF))
+    static let selectionBlue = Color(nsColor: adaptive(0x0366D6, 0x0366D6))
+    static let selectionGray = Color(nsColor: adaptive(0xEBEEF1, 0x444D56))
+    static let selectionText = Color(nsColor: adaptive(0x24292E, 0xF6F8FA))
     static let counter = Color(nsColor: adaptive(0xDDE1E6, 0x30363D))
     static let modified = Color(nsColor: adaptive(0x946200, 0xE3B341))
 
